@@ -1,0 +1,207 @@
+import crypto from "crypto";
+
+import User from "../../Models/User.js";
+import Session from "../../Models/Session.js";
+import RefreshToken from "../../Models/RefreshToken.js";
+import DeviceToken from "../../Models/DeviceToken.js";
+
+import { hashPassword } from "../../Utils/Register/password.js";
+import { generateAccessToken } from "../../Utils/Register/jwt.js";
+
+import {
+    generateRefreshToken,
+    generateTokenFamily,
+} from "../../Utils/Register/refreshToken.js";
+
+import { hashToken } from "../../Utils/Register/hash.js";
+import { generateSecureDeviceToken } from "../../Utils/Register/secureDeviceToken.js";
+
+const REFRESH_TOKEN_DAYS = 90;
+
+export interface RegisterServiceInput {
+    username: string;
+    email: string;
+    password: string;
+    deviceId: string;
+}
+
+export interface RegisterResult {
+    user: {
+        id: string;
+        username: string;
+        email: string;
+        role: string;
+    };
+    accessToken: string;
+    refreshToken: string;
+    sessionId: string;
+    deviceId: string;
+}
+
+const registerService = async (
+    data: RegisterServiceInput,
+    metadata: {
+        ipAddress?: string;
+        userAgent?: string;
+    }
+): Promise<RegisterResult> => {
+
+    // ---------------------------------------------
+    // 1. CHECK EXISTING USER
+    // ---------------------------------------------
+
+    const existingUser = await User.findOne({
+        $or: [
+            { email: data.email },
+            { username: data.username },
+        ],
+    });
+
+    if (existingUser) {
+        if (existingUser.email === data.email) {
+            throw new Error("Email is already registered");
+        }
+
+        throw new Error("Username is already taken");
+    }
+
+    // ---------------------------------------------
+    // 2. HASH PASSWORD
+    // ---------------------------------------------
+
+    const passwordHash = await hashPassword(
+        data.password
+    );
+
+    // ---------------------------------------------
+    // 3. CREATE VERIFIED USER
+    // ---------------------------------------------
+
+    const user = await User.create({
+        username: data.username,
+        email: data.email,
+        passwordHash,
+        role: "CUSTOMER",
+        isActive: true,
+
+        // Verification was already completed
+        // by registerController.
+        isEmailVerified: true,
+
+        tokenVersion: 0,
+    });
+
+    // ---------------------------------------------
+    // 4. CREATE SESSION DATA
+    // ---------------------------------------------
+
+    const deviceId = data.deviceId;
+
+    const sessionId = crypto.randomUUID();
+
+    const tokenFamily = generateTokenFamily();
+
+    // ---------------------------------------------
+    // 5. CREATE REFRESH TOKEN
+    // ---------------------------------------------
+
+    const refreshToken = generateRefreshToken();
+
+    const refreshTokenHash = hashToken(
+        refreshToken
+    );
+
+    const expiresAt = new Date();
+
+    expiresAt.setDate(
+        expiresAt.getDate() + REFRESH_TOKEN_DAYS
+    );
+
+    // ---------------------------------------------
+    // 6. CREATE SESSION
+    // ---------------------------------------------
+
+    await Session.create({
+        userId: user._id,
+        sessionId,
+        deviceId,
+        ipAddress: metadata.ipAddress,
+        userAgent: metadata.userAgent,
+        tokenVersion: user.tokenVersion,
+        isRevoked: false,
+        lastUsedAt: new Date(),
+        expiresAt,
+    });
+
+    // ---------------------------------------------
+    // 7. CREATE REFRESH TOKEN DOCUMENT
+    // ---------------------------------------------
+
+    const refreshTokenDocument =
+        await RefreshToken.create({
+            userId: user._id,
+            sessionId,
+            tokenHash: refreshTokenHash,
+            tokenFamily,
+            tokenVersion: user.tokenVersion,
+            issuedAt: new Date(),
+            expiresAt,
+            isRevoked: false,
+        });
+
+    // ---------------------------------------------
+    // 8. CREATE DEVICE TOKEN
+    // ---------------------------------------------
+
+    const secureDeviceToken =
+        generateSecureDeviceToken();
+
+    await DeviceToken.create({
+        userId: user._id,
+        sessionId,
+        deviceId,
+        refreshTokenId:
+            refreshTokenDocument._id,
+        secureDeviceToken,
+        platform: "WEB",
+        userAgent:
+            metadata.userAgent ?? "unknown",
+        ipAddress:
+            metadata.ipAddress ?? "unknown",
+        lastUsedAt: new Date(),
+        remembered: true,
+        expiresAt,
+        isRevoked: false,
+    });
+
+    // ---------------------------------------------
+    // 9. CREATE ACCESS TOKEN
+    // ---------------------------------------------
+
+    const accessToken = generateAccessToken({
+        userId: user._id.toString(),
+        sessionId,
+        role: user.role,
+        tokenVersion: user.tokenVersion,
+    });
+
+    // ---------------------------------------------
+    // 10. RETURN RESULT
+    // ---------------------------------------------
+
+    return {
+        user: {
+            id: user._id.toString(),
+            username: user.username,
+            email: user.email,
+            role: user.role,
+        },
+
+        accessToken,
+        refreshToken,
+        sessionId,
+        deviceId,
+    };
+};
+
+export default registerService;

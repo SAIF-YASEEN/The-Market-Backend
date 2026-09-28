@@ -4,9 +4,9 @@ import dotenv from "dotenv";
 import cookieParser from "cookie-parser";
 import helmet from "helmet";
 import morgan from "morgan";
-import connectDB from "./Configs/database"; 
-import authRouter from "./Routers/AuthRoutes.js";
-
+import connectDB from "./Configs/database";
+import authRoutes from "./Routes/authRoutes.js";
+import userRoutes from "./Routes/userRoutes.js";
 // Load environment variables
 dotenv.config();
 
@@ -65,15 +65,19 @@ app.use(cookieParser());
 // ================================
 
 app.use(morgan("dev"));
+// ================================
+// Cookie Parser
+// ================================
 
+app.use(cookieParser());
 // ================================
 // ROUTERSS
 // ================================
 
 
 
-
-app.use("/api/v1/auth", authRouter);
+app.use("/api/v1/auth", authRoutes);
+app.use("/api/v1/user", userRoutes);
 
 // ================================
 // Health Check
